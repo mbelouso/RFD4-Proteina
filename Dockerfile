@@ -16,6 +16,11 @@
 # from this build and it needs no submodule and no internal credentials. TMol and its
 # operator packages come from published wheels only, never a source build.
 #
+# Network sources used by this build (all must be whitelisted on the runner):
+#   deb.debian.org (apt), pypi.org + files.pythonhosted.org (pip, uv, all wheels),
+#   download.pytorch.org (Torch wheels via `uv --torch-backend`). uv itself is installed from
+#   PyPI, so it needs no separate whitelist entry; GitHub is never contacted.
+#
 # CUDA runtime libraries come from the PyTorch wheels, so no CUDA base image is needed;
 # the host only needs an NVIDIA driver and the NVIDIA container toolkit.
 FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
@@ -85,8 +90,17 @@ RUN if [ "${RFD4_ACCELERATOR}" = "cpu" ]; then \
         rm -f /tmp/rfd4-constraints.txt; \
     fi
 
+# JupyterLab, from PyPI only (same source as uv and the dependencies above).
+RUN printf 'certifi>=2026.10.19\n' > /tmp/rfd4-constraints.txt && \
+    uv pip install --system --no-cache -c /tmp/rfd4-constraints.txt jupyterlab && \
+    rm -f /tmp/rfd4-constraints.txt && \
+    python -m pip check
+
 RUN mkdir -p /data /opt/rfd4/cache/huggingface /workspace
 WORKDIR /workspace
+
+# JupyterLab listens on 8080. Token authentication stays on (the token is printed in the container logs).
+EXPOSE 8080
 
 # Smoke test: imports, TMol operators for the selected profile, Inductor, and the CLI.
 RUN TORCHINDUCTOR_CACHE_DIR=/tmp/rfd4-build-compile RFD4_ACCELERATOR="${RFD4_ACCELERATOR}" python -c \
@@ -94,4 +108,4 @@ RUN TORCHINDUCTOR_CACHE_DIR=/tmp/rfd4-build-compile RFD4_ACCELERATOR="${RFD4_ACC
     rm -rf /tmp/rfd4-build-compile && \
     rfd4-generate --help
 
-CMD ["rfd4-generate", "--help"]
+CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8080", "--no-browser", "--allow-root", "--notebook-dir=/workspace"]
