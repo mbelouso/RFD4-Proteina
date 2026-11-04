@@ -27,11 +27,17 @@ from collections import deque
 from pathlib import Path
 
 if __package__:
-    from .af2_apptainer import AF2_NUM_RECYCLES, build_container_fold_command
+    from .af2_apptainer import AF2_NUM_RECYCLES, _bundled_runtime_available, build_container_fold_command
 else:  # Direct script execution.
-    from af2_apptainer import AF2_NUM_RECYCLES, build_container_fold_command
+    from af2_apptainer import AF2_NUM_RECYCLES, _bundled_runtime_available, build_container_fold_command
 
 _REQUIRED_ENV_VARS = ("AF2_IMAGE", "AF2_JAX_CACHE_DIR", "AF2_MODEL_DIR")
+
+
+def _env_ready() -> bool:
+    """The image's bundled JAX environment stands in for AF2_IMAGE."""
+    required = [v for v in _REQUIRED_ENV_VARS if v != "AF2_IMAGE" or not _bundled_runtime_available()]
+    return all(os.environ.get(v) for v in required)
 _DEFAULT_FOLD_TIMEOUT_S = float(os.environ.get("AF2_FOLD_TIMEOUT_S", "3600"))
 
 
@@ -217,7 +223,7 @@ def _replace_exited_worker(
 
 
 def _serve(args: argparse.Namespace) -> int:
-    if args.skip_if_no_env and not all(os.environ.get(v) for v in _REQUIRED_ENV_VARS):
+    if args.skip_if_no_env and not _env_ready():
         print("[af2-daemon] AF2 env vars not set; not serving.", file=sys.stderr)
         return 0
 
@@ -368,7 +374,7 @@ def _spawn_one(rank: int, log_dir: Path) -> subprocess.Popen:
 
 
 def _launch(args: argparse.Namespace) -> int:
-    if args.skip_if_no_env and not all(os.environ.get(v) for v in _REQUIRED_ENV_VARS):
+    if args.skip_if_no_env and not _env_ready():
         print("[af2-daemons] AF2 env vars not set; skipping daemon launch.", file=sys.stderr)
         return 0
 

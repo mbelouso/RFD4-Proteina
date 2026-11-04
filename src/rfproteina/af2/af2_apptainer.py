@@ -104,14 +104,25 @@ def _af2_resource_bind_args() -> list[str]:
     return _bind_args_for_specs(_af2_resource_bind_specs())
 
 
+# Interpreter and Pallas-enabled AlphaFold2 sources of the AF2 JAX environment baked into the Docker image.
+_BUNDLED_PYTHON = "/alphafold2_venv/bin/python"
+_BUNDLED_PYTHONPATH = "/opt/alphafold2"
+
+
+def _bundled_runtime_available() -> bool:
+    return not os.environ.get("AF2_IMAGE") and os.access(_BUNDLED_PYTHON, os.X_OK)
+
+
 def _resolve_backend(backend: str | None = None) -> str:
     explicit = backend or os.environ.get("AF2_RUNTIME_BACKEND")
     if explicit:
         name = explicit.strip().lower()
+    elif _bundled_runtime_available():
+        name = "native"
     else:
         name = "pyxis" if os.environ.get("CONTAINER_TYPE", "").lower() == "docker" else "apptainer"
-    if name not in {"apptainer", "pyxis", "docker"}:
-        raise ValueError(f"AF2_RUNTIME_BACKEND must be 'apptainer', 'pyxis', or 'docker', got {name!r}")
+    if name not in {"apptainer", "pyxis", "docker", "native"}:
+        raise ValueError(f"AF2_RUNTIME_BACKEND must be 'apptainer', 'pyxis', 'docker', or 'native', got {name!r}")
     return name
 
 
@@ -406,6 +417,39 @@ def build_docker_fold_command(
     return cmd
 
 
+def build_native_fold_command(
+    manifest_path: str | Path | None,
+    gpu_device: int,
+    batch_script: str | Path | None = None,
+    serve: bool = False,
+    resident_models: str | None = None,
+) -> list[str]:
+    """Run the AF2 worker with the Docker image's bundled JAX environment (no nested container)."""
+    jax_cache = _require("AF2_JAX_CACHE_DIR")
+    _prepare_jax_cache(jax_cache)
+    weights = _require("AF2_MODEL_DIR")
+    resident_models = _resident_models(resident_models)
+    batch_path = Path(batch_script or _DEFAULT_BATCH_SCRIPT).resolve()
+    return [
+        "env",
+        f"CUDA_VISIBLE_DEVICES={int(gpu_device)}",
+        "XLA_PYTHON_CLIENT_PREALLOCATE=false",
+        "JAX_PLATFORMS=cuda,cpu",
+        f"PYTHONPATH={_BUNDLED_PYTHONPATH}",
+        f"AF2_MODEL_DIR={weights}",
+        f"AF2_RESIDENT_MODELS={resident_models}",
+        os.environ.get("AF2_PYTHON") or _BUNDLED_PYTHON,
+        str(batch_path),
+        *_worker_args(
+            manifest_path,
+            jax_cache=jax_cache,
+            weights=weights,
+            resident_models=resident_models,
+            serve=serve,
+        ),
+    ]
+
+
 def build_container_fold_command(
     manifest_path: str | Path | None,
     gpu_device: int,
@@ -420,6 +464,7 @@ def build_container_fold_command(
         "apptainer": build_apptainer_fold_command,
         "pyxis": build_pyxis_fold_command,
         "docker": build_docker_fold_command,
+        "native": build_native_fold_command,
     }
     builder = builders[resolved]
     return builder(

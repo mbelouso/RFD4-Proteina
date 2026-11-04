@@ -35,9 +35,16 @@ from pathlib import Path
 from af3_apptainer import (
     AF3_NUM_RECYCLES,
     build_apptainer_fold_command,
+    native_python,
 )
 
 _REQUIRED_ENV_VARS = ("AF3_IMAGE", "AF3_JAX_CACHE_DIR", "AF3_MODEL_DIR")
+
+
+def _env_ready() -> bool:
+    """An in-container JAX environment stands in for AF3_IMAGE."""
+    required = [v for v in _REQUIRED_ENV_VARS if v != "AF3_IMAGE" or not native_python()]
+    return all(os.environ.get(v) for v in required)
 
 
 # ----------------------------------------------------------------------------
@@ -126,7 +133,7 @@ def _safe_unlink(path: str) -> None:
 
 
 def _serve(args: argparse.Namespace) -> int:
-    if args.skip_if_no_env and not all(os.environ.get(v) for v in _REQUIRED_ENV_VARS):
+    if args.skip_if_no_env and not _env_ready():
         print("[af3-daemon] AF3 env vars not set; not serving.", file=sys.stderr)
         return 0
 
@@ -345,7 +352,7 @@ def _spawn_one(rank: int, log_dir: Path, lazy_warmup: bool = False) -> subproces
 
 
 def _launch(args: argparse.Namespace) -> int:
-    if args.skip_if_no_env and not all(os.environ.get(v) for v in _REQUIRED_ENV_VARS):
+    if args.skip_if_no_env and not _env_ready():
         print("[af3-daemons] AF3 env vars not set; skipping daemon launch.", file=sys.stderr)
         return 0
 

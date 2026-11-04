@@ -26,6 +26,20 @@ AF3_FLASH_ATTENTION_IMPLEMENTATION = os.environ.get("AF3_FLASH_ATTENTION_IMPLEME
 _DEFAULT_BATCH_SCRIPT = Path(__file__).resolve().parent / "run_alphafold_batch.py"
 
 
+# Interpreter of the AF3/OF3 JAX environment baked into the application Docker image.
+_BUNDLED_PYTHON = "/alphafold3_venv/bin/python"
+
+
+def native_python() -> str:
+    """In-container AF3/OF3 interpreter: ``AF3_PYTHON``, else the image's bundled venv (unless AF3_IMAGE is set)."""
+    explicit = os.environ.get("AF3_PYTHON", "").strip()
+    if explicit:
+        return explicit
+    if not os.environ.get("AF3_IMAGE") and os.access(_BUNDLED_PYTHON, os.X_OK):
+        return _BUNDLED_PYTHON
+    return ""
+
+
 def _require(name: str) -> str:
     value = os.environ.get(name)
     if not value:
@@ -93,7 +107,8 @@ def build_apptainer_fold_command(
 ) -> list[str]:
     """Build the ``apptainer run af3-open.sif python run_alphafold_batch.py`` argv.
 
-    Reads ``AF3_IMAGE`` / ``AF3_JAX_CACHE_DIR`` /
+    If an in-container AF3/OF3 environment exists (``AF3_PYTHON`` or the image's ``/alphafold3_venv``; see
+    :py:func:`native_python`) the worker runs directly with it instead of through apptainer. Otherwise reads ``AF3_IMAGE`` / ``AF3_JAX_CACHE_DIR`` /
     ``AF3_MODEL_DIR`` from env (set by ``.ipd/.env.<cluster>``); raises
     :py:class:`OSError` on missing var. Data binds come from
     ``APPTAINER_BIND_PATHS`` (see :py:func:`_data_bind_args`).
@@ -112,12 +127,40 @@ def build_apptainer_fold_command(
             subprocess loads AF3 once and reads manifest paths on stdin
             instead of folding a single ``--manifest`` argument and exiting.
     """
-    sif = _require("AF3_IMAGE")
+    python_exe = native_python()
     jax_cache = _require("AF3_JAX_CACHE_DIR")
     weights = _require("AF3_MODEL_DIR")
     if batch_script is None:
         batch_script = _DEFAULT_BATCH_SCRIPT
     batch_path = Path(batch_script).resolve()
+
+    if python_exe:
+        # Container image that already ships the AF3/OF3 JAX environment: no nested apptainer.
+        cmd = [
+            "env",
+            f"CUDA_VISIBLE_DEVICES={int(gpu_device)}",
+            "XLA_PYTHON_CLIENT_PREALLOCATE=false",
+            "JAX_PLATFORMS=cuda",
+            f"AF3_MODEL_DIR={weights}",
+            python_exe,
+            str(batch_path),
+            f"--num_recycles={AF3_NUM_RECYCLES}",
+            f"--flash_attention_implementation={AF3_FLASH_ATTENTION_IMPLEMENTATION}",
+            "--num_diffusion_samples=1",
+            "--gpu_device=0",
+            f"--jax_compilation_cache_dir={jax_cache}",
+            f"--model_dir={weights}",
+            f"--save_full_outputs={'true' if save_full_outputs else 'false'}",
+        ]
+        if serve:
+            cmd.append("--serve")
+        else:
+            if manifest_path is None:
+                raise ValueError("manifest_path is required when serve is False.")
+            cmd.append(f"--manifest={manifest_path}")
+        return cmd
+
+    sif = _require("AF3_IMAGE")
 
     cmd = [
         "apptainer",
